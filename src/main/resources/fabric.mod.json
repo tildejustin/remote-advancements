@@ -1,21 +1,21 @@
 {
   "schemaVersion": 1,
-  "id": "modid",
+  "id": "remote-advancements",
   "version": "${version}",
-  "name": "",
+  "name": "Remote Advancements",
   "description": "",
   "authors": [
     "tildejustin"
   ],
   "contact": {
-    "homepage": "https://modrinth.com/mod/modid",
-    "sources": "https://github.com/tildejustin/modid",
-    "issues": "https://github.com/tildejustin/modid/issues"
+    "homepage": "https://github.com/tildejustin/remote-advancements",
+    "sources": "https://github.com/tildejustin/remote-advancements",
+    "issues": "https://github.com/tildejustin/remote-advancements/issues"
   },
   "license": "MPL-2.0",
   "environment": "*",
   "mixins": [
-    "modid.mixins.json"
+    "remote-advancements.mixins.json"
   ],
   "depends": {
     "minecraft": "*",
