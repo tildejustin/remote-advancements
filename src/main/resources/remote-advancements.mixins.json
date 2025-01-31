@@ -8,7 +8,6 @@
     "accessor.StatHandlerAccessor"
   ],
   "mixins": [
-    "MinecraftServerMixin",
     "PlayerManagerMixin",
     "accessor.MinecraftServerAccessor"
   ],

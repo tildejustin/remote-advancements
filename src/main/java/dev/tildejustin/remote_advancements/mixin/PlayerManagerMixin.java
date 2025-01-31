@@ -18,10 +18,19 @@ public abstract class PlayerManagerMixin {
     @Final
     private MinecraftServer server;
 
+    @Shadow
+    public abstract void sendToAll(Packet<?> packet);
+
     @Inject(method = "onPlayerConnect", at = @At(value = "FIELD", target = "Lnet/minecraft/network/packet/s2c/play/CustomPayloadS2CPacket;BRAND:Lnet/minecraft/util/Identifier;"))
     private void sendWorldNamePacket(ClientConnection connection, ServerPlayerEntity player, CallbackInfo ci, @Local ServerPlayNetworkHandler serverPlayNetworkHandler) {
-        // could string length overflow? max: 32767
+        // TODO: could too long string length cause crashes when encoding? do other uses of writeString try to handle this? max: 32767
         String dir = ((MinecraftServerAccessor) this.server).getSession().getDirectoryName();
         serverPlayNetworkHandler.sendPacket(new CustomPayloadS2CPacket(new Identifier("remote-advancements", "world-name"), new PacketByteBuf(Unpooled.buffer()).writeString(dir)));
+    }
+
+    @Inject(method = "saveAllPlayerData()V", at = @At("TAIL"))
+    private void sendPacketForAutosave(CallbackInfo ci) {
+        // TODO: also need to save for when client player leaves
+        this.sendToAll(new CustomPayloadS2CPacket(new Identifier("remote-advancements", "save"), new PacketByteBuf(Unpooled.buffer(0))));
     }
 }

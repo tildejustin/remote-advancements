@@ -1,6 +1,5 @@
 package dev.tildejustin.remote_advancements.mixin;
 
-import com.google.common.base.Charsets;
 import com.google.common.collect.Maps;
 import com.google.gson.*;
 import com.llamalad7.mixinextras.sugar.Local;
@@ -15,13 +14,13 @@ import net.minecraft.network.packet.s2c.play.CustomPayloadS2CPacket;
 import net.minecraft.stat.*;
 import net.minecraft.util.*;
 import net.minecraft.util.registry.Registry;
-import org.apache.commons.io.FileUtils;
 import org.apache.logging.log4j.*;
 import org.spongepowered.asm.mixin.*;
 import org.spongepowered.asm.mixin.injection.*;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.io.*;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.Map;
 
@@ -38,7 +37,7 @@ public abstract class ClientPlayNetworkHandlerMixin {
             .create();
 
     @Unique
-    private final Identifier autosave = new Identifier("remote-advancements", "autosave");
+    private final Identifier autosave = new Identifier("remote-advancements", "save");
 
     @Unique
     private final Identifier worldNameId = new Identifier("remote-advancements", "world-name");
@@ -57,13 +56,25 @@ public abstract class ClientPlayNetworkHandlerMixin {
         return stat.getType().getRegistry().getId(stat.getValue());
     }
 
-    @Inject(method = "onCustomPayload", at = @At(value = "FIELD", target = "Lnet/minecraft/network/packet/s2c/play/CustomPayloadS2CPacket;BRAND:Lnet/minecraft/util/Identifier;"), cancellable = true)
-    private void onCustomPayload(CustomPayloadS2CPacket packet, CallbackInfo ci, @Local Identifier identifier, @Local PacketByteBuf packetByteBuf) throws IOException {
+    @Inject(method = "onGameJoin", at = @At("TAIL"))
+    private void setCurrentWorldAsUnknown(CallbackInfo ci) {
         if (root == null) {
             root = this.client.runDirectory.toPath().resolve("remote-advancements").resolve("save");
         }
 
+        this.worldName = null;
+    }
+
+    @Inject(method = "onCustomPayload", at = @At(value = "FIELD", target = "Lnet/minecraft/network/packet/s2c/play/CustomPayloadS2CPacket;BRAND:Lnet/minecraft/util/Identifier;"), cancellable = true)
+    private void onCustomPayload(CustomPayloadS2CPacket packet, CallbackInfo ci, @Local Identifier identifier, @Local PacketByteBuf data) {
+        if (worldNameId.equals(identifier)) {
+            ci.cancel();
+            worldName = data.readString();
+            return;
+        }
+
         if (autosave.equals(identifier)) {
+            ci.cancel();
             if (worldName == null) {
                 return;
             }
@@ -72,52 +83,57 @@ public abstract class ClientPlayNetworkHandlerMixin {
             Path statsPath = outer.resolve(WorldSavePath.STATS.getRelativePath());
             Path advancementsPath = outer.resolve(WorldSavePath.ADVANCEMENTS.getRelativePath());
 
+            try {
+                Files.createDirectories(outer);
+                if (!Files.isDirectory(statsPath)) {
+                    Files.createDirectory(statsPath);
+                }
+                if (!Files.isDirectory(advancementsPath)) {
+                    Files.createDirectory(advancementsPath);
+                }
+            } catch (IOException e) {
+                // unlucky
+                LOGGER.log(Level.ERROR, "Failed to create world directories", e);
+                return;
+            }
+
             StatHandler stats = this.client.player.getStatHandler();
-            // ServerStatHandler#save
-            FileUtils.writeStringToFile(statsPath.resolve(this.client.player.getUuid() + ".json").toFile(), statsAsString(((StatHandlerAccessor) stats).getStatMap()));
+            saveStats(statsPath.resolve(this.client.player.getUuid() + ".json"), ((StatHandlerAccessor) stats).getStatMap());
             ClientAdvancementManager advancements = this.client.player.networkHandler.getAdvancementHandler();
-            saveAdvancements(advancementsPath.resolve(this.client.player.getUuid() + ".json").toFile(), ((ClientAdvancementManagerAccessor) advancements).getAdvancementProgresses());
-            ci.cancel(); // will still trigger finally
-        } else if (worldNameId.equals(identifier)) {
-            worldName = packetByteBuf.readString();
-            Path outer = root.resolve(worldName);
-            Files.createDirectories(outer);
-            Path stats = outer.resolve(WorldSavePath.STATS.getRelativePath());
-            Files.deleteIfExists(stats);
-            Files.createDirectory(stats);
-            Path advancements = outer.resolve(WorldSavePath.ADVANCEMENTS.getRelativePath());
-            Files.deleteIfExists(advancements);
-            Files.createDirectory(advancements);
-            ci.cancel(); // will still trigger finally
+            saveAdvancements(advancementsPath.resolve(this.client.player.getUuid() + ".json"), ((ClientAdvancementManagerAccessor) advancements).getAdvancementProgresses());
         }
     }
 
     // ServerStatHandler#asString
     @Unique
-    protected String statsAsString(Object2IntMap<Stat<?>> statMap) {
+    protected void saveStats(Path statsFile, Object2IntMap<Stat<?>> statMap) {
         Map<StatType<?>, JsonObject> map = Maps.newHashMap();
 
         for (Object2IntMap.Entry<Stat<?>> entry : statMap.object2IntEntrySet()) {
             Stat<?> stat = entry.getKey();
-            map.computeIfAbsent(stat.getType(), statType -> new JsonObject())
-                    .addProperty(getStatId(stat).toString(), entry.getIntValue());
+            map.computeIfAbsent(stat.getType(), statType -> new JsonObject()).addProperty(getStatId(stat).toString(), entry.getIntValue());
         }
 
-        JsonObject stats = new JsonObject();
+        JsonObject statsJson = new JsonObject();
 
         for (Map.Entry<StatType<?>, JsonObject> entry : map.entrySet()) {
-            stats.add(Registry.STAT_TYPE.getId(entry.getKey()).toString(), entry.getValue());
+            statsJson.add(Registry.STAT_TYPE.getId(entry.getKey()).toString(), entry.getValue());
         }
 
         JsonObject outer = new JsonObject();
-        outer.add("stats", stats);
+        outer.add("stats", statsJson);
         outer.addProperty("DataVersion", SharedConstants.getGameVersion().getWorldVersion());
-        return outer.toString();
+
+        try {
+            Files.write(statsFile, outer.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            LOGGER.error("Couldn't save player stats to {}", statsFile, e);
+        }
     }
 
     // PlayerAdvancementTracker#save
     @Unique
-    public void saveAdvancements(File advancementFile, Map<Advancement, AdvancementProgress> advancementToProgress) {
+    public void saveAdvancements(Path advancementFile, Map<Advancement, AdvancementProgress> advancementToProgress) {
         Map<Identifier, AdvancementProgress> map = Maps.newHashMap();
 
         for (Map.Entry<Advancement, AdvancementProgress> entry : advancementToProgress.entrySet()) {
@@ -127,51 +143,11 @@ public abstract class ClientPlayNetworkHandlerMixin {
             }
         }
 
-        JsonElement jsonElement = GSON.toJsonTree(map);
-        jsonElement.getAsJsonObject().addProperty("DataVersion", SharedConstants.getGameVersion().getWorldVersion());
+        JsonElement outer = GSON.toJsonTree(map);
+        outer.getAsJsonObject().addProperty("DataVersion", SharedConstants.getGameVersion().getWorldVersion());
 
         try {
-            OutputStream outputStream = new FileOutputStream(advancementFile);
-            Throwable exception = null;
-
-            try {
-                Writer writer = new OutputStreamWriter(outputStream, Charsets.UTF_8.newEncoder());
-                Throwable exception2 = null;
-
-                try {
-                    GSON.toJson(jsonElement, writer);
-                } catch (Throwable e) {
-                    exception2 = e;
-                    throw e;
-                } finally {
-                    if (writer != null) {
-                        if (exception2 != null) {
-                            try {
-                                writer.close();
-                            } catch (Throwable e) {
-                                exception2.addSuppressed(e);
-                            }
-                        } else {
-                            writer.close();
-                        }
-                    }
-                }
-            } catch (Throwable e) {
-                exception = e;
-                throw e;
-            } finally {
-                if (outputStream != null) {
-                    if (exception != null) {
-                        try {
-                            outputStream.close();
-                        } catch (Throwable e) {
-                            exception.addSuppressed(e);
-                        }
-                    } else {
-                        outputStream.close();
-                    }
-                }
-            }
+            Files.write(advancementFile, GSON.toJson(outer).getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             LOGGER.error("Couldn't save player advancements to {}", advancementFile, e);
         }
